@@ -1,0 +1,9 @@
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+
+# EF Core migrations are generated: don't hold them to the hand-written code rules.
+[src/Splitto.Api/Data/Migrations/*.cs]
+generated_code = true

@@ -1,0 +1,80 @@
+@page "/"
+@inject SplittoClient Api
+@inject RecentGroups Recent
+@inject NavigationManager Nav
+
+<PageTitle>splitto · split group expenses</PageTitle>
+
+<section class="hero">
+    <h1>Split group expenses, settle with the fewest payments.</h1>
+    <p>Trips, dinners, flatmates. No sign-up: create a group, share the link, add what everyone paid.</p>
+</section>
+
+@if (recent.Count > 0)
+{
+    <section class="card">
+        <h2>Your groups</h2>
+        <ul class="recent">
+            @foreach (var group in recent)
+            {
+                <li><a href="g/@group.Token">@group.Name</a></li>
+            }
+        </ul>
+    </section>
+}
+
+<section class="card">
+    <h2>New group</h2>
+    <form @onsubmit="Create">
+        <label>Name <input @bind="name" placeholder="Sicily 2026" maxlength="80" required /></label>
+        <label>Currency
+            <select @bind="currency">
+                @foreach (var iso in Currencies)
+                {
+                    <option value="@iso">@iso</option>
+                }
+            </select>
+        </label>
+        <label>People <small>one per line, you included</small>
+            <textarea @bind="people" rows="4" placeholder="Andrea&#10;Giulia&#10;Marco"></textarea>
+        </label>
+        @if (error is not null)
+        {
+            <p class="error" role="alert">@error</p>
+        }
+        <button class="primary" disabled="@busy">@(busy ? "Creating…" : "Create group")</button>
+    </form>
+</section>
+
+@code {
+    private static readonly string[] Currencies = ["EUR", "USD", "GBP", "CHF", "SEK", "NOK", "DKK", "PLN", "CZK", "JPY", "CAD", "AUD"];
+    private string name = "";
+    private string currency = "EUR";
+    private string people = "";
+    private string? error;
+    private bool busy;
+    private List<RecentGroups.Entry> recent = [];
+
+    protected override async Task OnInitializedAsync() => recent = await Recent.List();
+
+    private async Task Create()
+    {
+        error = null;
+        busy = true;
+        try
+        {
+            var members = people.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            var group = await Api.CreateGroup(new CreateGroupRequest(name, currency, members));
+            await Recent.Remember(group.Token, group.Name);
+            Nav.NavigateTo($"g/{group.Token}");
+        }
+        catch (ApiException e)
+        {
+            error = e.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}
