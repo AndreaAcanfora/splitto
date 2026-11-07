@@ -1,0 +1,28 @@
+# Everything you need to run splitto: `docker compose up`, then open http://localhost:8080
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: splitto
+      POSTGRES_PASSWORD: splitto
+      POSTGRES_DB: splitto
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U splitto"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      ConnectionStrings__Splitto: "Host=db;Username=splitto;Password=splitto;Database=splitto"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:

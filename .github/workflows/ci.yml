@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # A real PostgreSQL for the integration tests: each test class gets its own database.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: splitto
+          POSTGRES_PASSWORD: splitto
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U splitto" --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      SPLITTO_TEST_DB: "Host=localhost;Port=5432;Username=splitto;Password=splitto"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - run: dotnet restore
+      - run: dotnet build --no-restore -c Release
+      - run: dotnet test --no-build -c Release --logger "console;verbosity=normal"
+      - name: Migrations are in sync with the model
+        run: |
+          dotnet tool restore
+          dotnet ef migrations has-pending-model-changes --project src/Splitto.Api
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the app and its database
+        run: docker compose up -d --build --wait
+      - name: Smoke test through the public API
+        run: |
+          for i in $(seq 1 60); do curl -sf http://localhost:8080/healthz && break; sleep 1; done
+          token=$(curl -sf -X POST http://localhost:8080/api/groups -H 'Content-Type: application/json' \
+            -d '{"name":"CI trip","currency":"EUR","members":["Ada","Bob"]}' | jq -r .token)
+          group=$(curl -sf http://localhost:8080/api/groups/$token)
+          ada=$(echo "$group" | jq -r '.members[] | select(.name=="Ada") | .id')
+          bob=$(echo "$group" | jq -r '.members[] | select(.name=="Bob") | .id')
+          curl -sf -X POST http://localhost:8080/api/groups/$token/expenses -H 'Content-Type: application/json' \
+            -d "{\"description\":\"Pizza\",\"paidById\":\"$ada\",\"amountCents\":3000,\"mode\":\"Equal\",\"participants\":[{\"memberId\":\"$ada\",\"value\":1},{\"memberId\":\"$bob\",\"value\":1}]}" > /dev/null
+          transfers=$(curl -sf http://localhost:8080/api/groups/$token/balances | jq -c .transfers)
+          echo "$transfers"
+          test "$(echo "$transfers" | jq length)" = 1
+          test "$(echo "$transfers" | jq '.[0].cents')" = 1500
+          curl -sf http://localhost:8080/ | grep -q blazor.webassembly
+      - if: failure()
+        run: docker compose logs

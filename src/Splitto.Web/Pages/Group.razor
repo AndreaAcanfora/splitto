@@ -1,0 +1,338 @@
+@page "/g/{Token}"
+@inject SplittoClient Api
+@inject RecentGroups Recent
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>@(group?.Name ?? "Group") · splitto</PageTitle>
+
+@if (loadError is not null)
+{
+    <section class="card"><p class="error">@loadError</p><a href="">Back to the start</a></section>
+}
+else if (group is null || balances is null)
+{
+    <p class="muted">Loading…</p>
+}
+else
+{
+    <section class="group-head">
+        <div>
+            <h1>@group.Name</h1>
+            <p class="muted">@group.Members.Count people · spent @Money(balances.TotalSpentCents)</p>
+        </div>
+        <div class="actions">
+            <button @onclick="CopyLink">@(copied ? "Link copied ✓" : "🔗 Invite link")</button>
+            <a class="button" href="api/groups/@Token/export.csv">⬇ CSV</a>
+        </div>
+    </section>
+
+    <nav class="tabs" role="tablist">
+        @foreach (var (key, label) in Tabs)
+        {
+            <button role="tab" aria-selected="@(tab == key)" class="@(tab == key ? "active" : "")" @onclick="() => tab = key">@label</button>
+        }
+    </nav>
+
+    @if (error is not null)
+    {
+        <p class="error" role="alert">@error</p>
+    }
+
+    @if (tab == "expenses")
+    {
+        <section class="card">
+            <h2>Add an expense</h2>
+            <form @onsubmit="AddExpense">
+                <label>What <input @bind="description" placeholder="Dinner in Palermo" maxlength="120" required /></label>
+                <div class="row">
+                    <label>Amount <input @bind="amount" inputmode="decimal" placeholder="45.50" required /></label>
+                    <label>Currency
+                        <select @bind="expenseCurrency">
+                            <option value="@group.Currency">@group.Currency</option>
+                            @foreach (var iso in OtherCurrencies)
+                            {
+                                <option value="@iso">@iso</option>
+                            }
+                        </select>
+                    </label>
+                    @if (expenseCurrency != group.Currency)
+                    {
+                        <label>1 @expenseCurrency = ? @group.Currency <input @bind="rate" inputmode="decimal" placeholder="0.92" required /></label>
+                    }
+                </div>
+                <label>Paid by
+                    <select @bind="paidBy">
+                        @foreach (var m in group.Members)
+                        {
+                            <option value="@m.Id">@m.Name</option>
+                        }
+                    </select>
+                </label>
+                <fieldset>
+                    <legend>Split
+                        <select @bind="mode" class="inline">
+                            <option value="@SplitMode.Equal">equally</option>
+                            <option value="@SplitMode.Shares">by shares</option>
+                            <option value="@SplitMode.Exact">by exact amounts</option>
+                        </select>
+                    </legend>
+                    @foreach (var m in group.Members)
+                    {
+                        <div class="participant">
+                            <label class="check"><input type="checkbox" checked="@included[m.Id]" @onchange="e => included[m.Id] = (bool)e.Value!" /> @m.Name</label>
+                            @if (mode == SplitMode.Shares && included[m.Id])
+                            {
+                                <input class="small" type="number" min="0" @bind="shares[m.Id]" aria-label="Shares for @m.Name" />
+                            }
+                            @if (mode == SplitMode.Exact && included[m.Id])
+                            {
+                                <input class="small" @bind="exact[m.Id]" inputmode="decimal" placeholder="0.00" aria-label="Amount for @m.Name" />
+                            }
+                        </div>
+                    }
+                </fieldset>
+                <button class="primary" disabled="@busy">Add expense</button>
+            </form>
+        </section>
+
+        <section class="card">
+            <h2>Expenses</h2>
+            @if (expenses.Count == 0)
+            {
+                <p class="muted">Nothing yet. Add the first expense above.</p>
+            }
+            <ul class="list">
+                @foreach (var e in expenses)
+                {
+                    <li>
+                        <div>
+                            <strong>@e.Description</strong>
+                            <span class="muted">@NameOf(e.PaidById) paid · @e.Date.ToString("d MMM") · @e.Shares.Count people@(e.OriginalCurrency != group.Currency ? $" · {Format.Money(e.OriginalAmountCents, e.OriginalCurrency)}" : "")</span>
+                        </div>
+                        <div class="amount">@Money(e.AmountCents) <button class="link" title="Delete" @onclick="() => DeleteExpense(e.Id)">✕</button></div>
+                    </li>
+                }
+            </ul>
+        </section>
+    }
+    else if (tab == "balances")
+    {
+        <section class="card">
+            <h2>Balances</h2>
+            <ul class="list">
+                @foreach (var b in balances.Balances.OrderByDescending(b => b.BalanceCents))
+                {
+                    <li>
+                        <div><strong>@NameOf(b.MemberId)</strong> <span class="muted">paid @Money(b.PaidCents) · share @Money(b.OwedCents)</span></div>
+                        <div class="amount @(b.BalanceCents > 0 ? "plus" : b.BalanceCents < 0 ? "minus" : "")">@(b.BalanceCents > 0 ? "+" : "")@Money(b.BalanceCents)</div>
+                    </li>
+                }
+            </ul>
+        </section>
+        <section class="card">
+            <h2>Settle up</h2>
+            @if (balances.Transfers.Count == 0)
+            {
+                <p class="muted">Everyone is even. 🎉</p>
+            }
+            else
+            {
+                <p class="muted">The fewest payments that make everyone even: @balances.Transfers.Count.</p>
+                <ul class="list">
+                    @foreach (var t in balances.Transfers)
+                    {
+                        <li>
+                            <div><strong>@NameOf(t.FromId)</strong> pays <strong>@NameOf(t.ToId)</strong></div>
+                            <div class="amount">@Money(t.Cents) <button class="small-button" @onclick="() => MarkPaid(t)">Mark paid</button></div>
+                        </li>
+                    }
+                </ul>
+            }
+            @if (payments.Count > 0)
+            {
+                <h3>Payments made</h3>
+                <ul class="list">
+                    @foreach (var p in payments)
+                    {
+                        <li>
+                            <div>@NameOf(p.FromId) → @NameOf(p.ToId) <span class="muted">@p.Date.ToString("d MMM")</span></div>
+                            <div class="amount">@Money(p.AmountCents) <button class="link" title="Undo" @onclick="() => DeletePayment(p.Id)">✕</button></div>
+                        </li>
+                    }
+                </ul>
+            }
+        </section>
+    }
+    else
+    {
+        <section class="card">
+            <h2>People</h2>
+            <ul class="list">
+                @foreach (var m in group.Members)
+                {
+                    <li><div>@m.Name</div></li>
+                }
+            </ul>
+            <form class="row" @onsubmit="AddMember">
+                <input @bind="newMember" placeholder="Name" maxlength="60" required />
+                <button class="primary" disabled="@busy">Add</button>
+            </form>
+        </section>
+    }
+}
+
+@code {
+    [Parameter] public string Token { get; set; } = "";
+
+    private static readonly (string, string)[] Tabs = [("expenses", "Expenses"), ("balances", "Balances"), ("people", "People")];
+    private static readonly string[] AllCurrencies = ["EUR", "USD", "GBP", "CHF", "SEK", "NOK", "DKK", "PLN", "CZK", "JPY", "CAD", "AUD"];
+
+    private GroupDto? group;
+    private BalancesDto? balances;
+    private List<ExpenseDto> expenses = [];
+    private List<PaymentDto> payments = [];
+    private string tab = "expenses";
+    private string? loadError;
+    private string? error;
+    private bool busy;
+    private bool copied;
+
+    private string description = "";
+    private string amount = "";
+    private string expenseCurrency = "";
+    private string rate = "";
+    private Guid paidBy;
+    private SplitMode mode = SplitMode.Equal;
+    private Dictionary<Guid, bool> included = [];
+    private Dictionary<Guid, long> shares = [];
+    private Dictionary<Guid, string> exact = [];
+    private string newMember = "";
+
+    private IEnumerable<string> OtherCurrencies => AllCurrencies.Where(c => c != group?.Currency);
+
+    private string Money(long cents) => Format.Money(cents, group!.Currency);
+
+    private string NameOf(Guid id) => group?.Members.FirstOrDefault(m => m.Id == id)?.Name ?? "?";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            group = await Api.GetGroup(Token);
+            await Recent.Remember(group.Token, group.Name);
+            expenseCurrency = group.Currency;
+            ResetForm();
+            await Refresh();
+        }
+        catch (ApiException e)
+        {
+            loadError = e.Message;
+        }
+    }
+
+    private void ResetForm()
+    {
+        // Currency and exchange rate stay as they were: abroad, most expenses share them.
+        description = "";
+        amount = "";
+        mode = SplitMode.Equal;
+        if (paidBy == Guid.Empty || group!.Members.All(m => m.Id != paidBy))
+        {
+            paidBy = group!.Members[0].Id;
+        }
+        included = group!.Members.ToDictionary(m => m.Id, _ => true);
+        shares = group.Members.ToDictionary(m => m.Id, _ => 1L);
+        exact = group.Members.ToDictionary(m => m.Id, _ => "");
+    }
+
+    private async Task Refresh()
+    {
+        var expensesTask = Api.Expenses(Token);
+        var paymentsTask = Api.Payments(Token);
+        var balancesTask = Api.Balances(Token);
+        expenses = await expensesTask;
+        payments = await paymentsTask;
+        balances = await balancesTask;
+    }
+
+    private async Task Run(Func<Task> action)
+    {
+        error = null;
+        busy = true;
+        try
+        {
+            await action();
+            await Refresh();
+        }
+        catch (ApiException e)
+        {
+            error = e.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private Task AddExpense() => Run(async () =>
+    {
+        if (!Format.TryParseCents(amount, out long cents))
+        {
+            throw new ApiException("Enter an amount like 12.50.");
+        }
+        decimal? exchange = null;
+        if (expenseCurrency != group!.Currency)
+        {
+            if (!decimal.TryParse(rate.Replace(',', '.'), System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out decimal r) || r <= 0)
+            {
+                throw new ApiException($"Enter how many {group.Currency} one {expenseCurrency} is worth.");
+            }
+            exchange = r;
+        }
+        var participants = new List<ShareInputDto>();
+        foreach (var m in group.Members.Where(m => included[m.Id]))
+        {
+            long value = 1;
+            if (mode == SplitMode.Shares)
+            {
+                value = shares[m.Id];
+            }
+            else if (mode == SplitMode.Exact && !Format.TryParseCents(exact[m.Id], out value))
+            {
+                throw new ApiException($"Enter {m.Name}'s amount.");
+            }
+            participants.Add(new ShareInputDto(m.Id, value));
+        }
+        await Api.AddExpense(Token, new CreateExpenseRequest(description, paidBy, cents, mode, participants,
+            Currency: expenseCurrency, ExchangeRate: exchange));
+        ResetForm();
+    });
+
+    private Task DeleteExpense(Guid id) => Run(() => Api.DeleteExpense(Token, id));
+
+    private Task MarkPaid(TransferDto t) => Run(() => Api.AddPayment(Token, new CreatePaymentRequest(t.FromId, t.ToId, t.Cents)));
+
+    private Task DeletePayment(Guid id) => Run(() => Api.DeletePayment(Token, id));
+
+    private Task AddMember() => Run(async () =>
+    {
+        await Api.AddMember(Token, newMember);
+        newMember = "";
+        group = await Api.GetGroup(Token);
+        ResetForm();
+    });
+
+    private async Task CopyLink()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", Nav.Uri);
+            copied = true;
+        }
+        catch (JSException)
+        {
+            error = $"Copy this link: {Nav.Uri}";
+        }
+    }
+}

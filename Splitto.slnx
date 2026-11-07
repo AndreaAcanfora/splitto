@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Splitto.Api/Splitto.Api.csproj" />
+    <Project Path="src/Splitto.Core/Splitto.Core.csproj" />
+    <Project Path="src/Splitto.Web/Splitto.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Splitto.Api.Tests/Splitto.Api.Tests.csproj" />
+    <Project Path="tests/Splitto.Core.Tests/Splitto.Core.Tests.csproj" />
+  </Folder>
+</Solution>
